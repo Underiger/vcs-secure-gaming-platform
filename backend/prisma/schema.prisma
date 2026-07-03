@@ -1,0 +1,571 @@
+// ═══════════════════════════════════════════════════════════════════
+// Virtual Casino Sandbox — Prisma Schema（03_DATABASE_DESIGN.md §2）
+// 主 schema：PostgreSQL 16（生產 / docker-compose dev）
+// SQLite dev 模式：使用 prisma/schema.sqlite.prisma（enum/Json 降級 String），
+//   切換方式：npm run prisma:push:sqlite + prisma:generate:sqlite
+//   （Prisma 3+ 已移除 provider = env() 動態切換，故採雙 schema + --schema 旗標）
+//
+// ★★★ 核心約束：餘額條件更新（所有扣款必讀） ★★★
+// 任何餘額扣款必須使用「條件更新」並檢查受影響行數，配合 version 樂觀鎖防止超扣：
+//
+//   const { count } = await prisma.user.updateMany({
+//     where: { id: userId, balance: { gte: amount } },
+//     data:  { balance: { decrement: amount }, version: { increment: 1 } },
+//   });
+//   if (count !== 1) throw new InsufficientBalanceError(); // 交易內拋錯回滾
+//
+// 等價 SQL：UPDATE users SET balance = balance - :amount, version = version + 1
+//           WHERE id = :userId AND balance >= :amount;
+//
+// 任何模組不得繞過 wallet 模組直接動 balance（ESLint no-restricted-syntax 強制）；
+// 每次異動必伴隨一筆 BalanceTransaction（含 before/after），可全帳回放。
+//
+// 其他全域約定（03_DATABASE_DESIGN.md §0）：
+// - 金額一律 BigInt（最小單位 1 Coin），全系統禁止浮點。
+// - 主鍵用 cuid()（避免自增 ID 被枚舉）。
+// - 高頻寫入表（BetRecord / BalanceTransaction / IllegalPacketLog）不設 CASCADE，
+//   僅 RESTRICT（Prisma 預設）——對帳資料永不級聯消失。
+// - MATERIALIZED VIEW（leaderboard_daily/weekly/total）不進 schema，
+//   由 migration 內 raw SQL 建立（PG 專屬，SQLite 跳過）。
+// ═══════════════════════════════════════════════════════════════════
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-arm64-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────── Enums ───────────────────────────
+
+enum Role {
+  PLAYER
+  ADMIN
+}
+
+enum GameType {
+  SLOT
+  ROULETTE
+  DRAGON_GATE
+  HIGH_LOW
+  BLACKJACK
+  MAHJONG
+}
+
+enum TxType {
+  BET
+  PAYOUT
+  DAILY_REWARD
+  TASK_REWARD
+  GIFT_CODE
+  ADMIN_ADJUST
+  JACKPOT
+  REFUND
+  GACHA
+  FARM_SEED // 農場：種子購買扣款（delta < 0）
+  FARM_HARVEST // 農場：收成入帳（delta > 0；被偷過的地按剩餘比例入帳）
+  FARM_RAID // 農場：偷菜所得入帳（delta > 0；零和轉移，victim 的損失反映在其 FARM_HARVEST 減額）
+}
+
+// 地塊狀態機（農場系統；VCS 農場技術草案 §4.1/§4.3）：
+//   EMPTY --plant--> GROWING --(farm-ready job，純通知性)--> READY --harvest--> EMPTY
+// ★ 授權判斷一律以「readyAt <= now()」為準（時間型防作弊，伺服器時鐘權威）；
+//   READY 只是通知 job 蓋的展示戳記，job 沒跑到也不影響收成/偷菜的合法性。
+enum PlotState {
+  EMPTY
+  GROWING
+  READY
+}
+
+enum CharmType {
+  WEIGHT
+  RULE
+  CONDITIONAL
+  PITY
+  BONUS
+  LUCK
+}
+
+enum CharmRarity {
+  COMMON
+  RARE
+  EPIC
+  LEGENDARY
+}
+
+enum TaskType {
+  SPIN_COUNT
+  ROULETTE_ROUNDS
+  WIN_TRIPLE
+  NET_WIN
+  CHAT_COUNT
+}
+
+enum LeaderboardKind {
+  DAILY
+  WEEKLY
+  TOTAL
+}
+
+enum LoginResult {
+  SUCCESS
+  WRONG_PASSWORD
+  BANNED
+  TOTP_FAILED
+}
+
+enum PacketViolation {
+  BAD_SIGNATURE
+  NONCE_REPLAY
+  SEQ_REGRESSION
+  STALE_TIMESTAMP
+  OUT_OF_WINDOW
+  RATE_LIMIT
+}
+
+// ─────────────────────────── 核心 ───────────────────────────
+
+model User {
+  id           String  @id @default(cuid())
+  username     String  @unique @db.VarChar(20)
+  passwordHash String  @map("password_hash") // argon2id
+  role         Role    @default(PLAYER)
+  // ★ 樂觀鎖欄位對：balance 只准 wallet 模組以「條件更新 + version 遞增」修改，
+  //   嚴禁無條件 SET——見檔頭核心約束。5000 = 新手禮包。
+  balance      BigInt  @default(5000)
+  version      Int     @default(0) // 樂觀鎖計數器，與 balance 同步遞增
+  banned       Boolean @default(false)
+  muted        Boolean @default(false)
+  flagged      Boolean @default(false) // 異常偵測標記（anomaly.ts 寫入，人工裁決）
+  avatarId     Int     @default(0) @map("avatar_id")
+
+  jackpotPoints Int       @default(0) @map("jackpot_points")
+  // pity 主要用 Redis 計數（slot:pity:{userId}）；此欄位僅供備份還原或每日結算同步，
+  // 一般旋轉不寫入
+  pityCounter   Int       @default(0) @map("pity_counter")
+  loginStreak   Int       @default(0) @map("login_streak")
+  lastDailyAt   DateTime? @map("last_daily_at")
+
+  totpSecretEnc String?  @map("totp_secret_enc") // AES-256-GCM，僅 ADMIN
+  totpEnabled   Boolean  @default(false) @map("totp_enabled")
+  recoveryCodes String?  @map("recovery_codes") // 雜湊後 JSON 陣列
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  transactions  BalanceTransaction[]
+  bets          BetRecord[]
+  charms        UserCharm[]
+  loginLogs     LoginLog[]
+  chats         ChatMessage[]
+  dailyProgress UserDailyProgress[]
+  jackpotWins   JackpotHistory[]
+  redemptions   GiftCodeRedemption[]
+  refreshTokens RefreshToken[]
+  achievements  UserAchievement[]
+  snapshots     LeaderboardSnapshot[]
+  plots         Plot[]                @relation("PlotOwner")
+  plotRaids     Plot[]                @relation("PlotRaider")
+  raidsDone     RaidLog[]             @relation("RaidRaider")
+  raidsSuffered RaidLog[]             @relation("RaidVictim")
+
+  @@index([flagged])
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  tokenHash String   @unique @map("token_hash") // sha256(token)
+  familyId  String   @map("family_id") // 旋轉鏈；重用偵測 → 全家族撤銷
+  revoked   Boolean  @default(false)
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@index([userId, familyId])
+  @@map("refresh_tokens")
+}
+
+model BalanceTransaction {
+  id            String   @id @default(cuid())
+  userId        String   @map("user_id")
+  type          TxType
+  delta         BigInt // 正負皆可
+  balanceBefore BigInt   @map("balance_before")
+  balanceAfter  BigInt   @map("balance_after")
+  refId         String?  @map("ref_id") // BetRecord / GiftCode / AuditLog id
+  memo          String?  @db.VarChar(200)
+  createdAt     DateTime @default(now()) @map("created_at")
+  user          User     @relation(fields: [userId], references: [id])
+
+  @@index([userId, createdAt])
+  @@index([type, createdAt])
+  // BRIN：壓低物化視圖刷新與歷史範圍查詢成本（PG 專屬）
+  @@index([createdAt], map: "balance_tx_created_brin", type: Brin)
+  @@map("balance_transactions")
+}
+
+model BetRecord {
+  id       String   @id @default(cuid())
+  userId   String   @map("user_id")
+  gameType GameType @map("game_type")
+  amount   BigInt
+  payout   BigInt   @default(0)
+  detail   Json
+  // SLOT:        { reels: ["CHERRY","LEMON","LUCKY7"], charmsUsed: ["clover_boost"],
+  //                pityActive: false, luckySymbol: "CLOVER" }
+  // ROULETTE:    { roundId: "xxx", bets: [{ type: "RED", amount: 50 }] }
+  // DRAGON_GATE: { status: "OPEN"|"SETTLED"|"FORFEITED", doors: [7,11], gap: 3,
+  //                oddsMode: "TIER_11", multiplier: 3.3, thirdCard: 9, outcome: "WIN" }
+  // HIGH_LOW:    { status: "OPEN"|"SETTLED"|"FORFEITED"|"AUTO_SETTLED", pot: 200,
+  //                streak: 2, baseCard: 8, outcome: "CASHOUT" }
+  // BLACKJACK:   { status: "OPEN"|"SETTLED"|"AUTO_SETTLED", playerCards: [...],
+  //                dealerCards: [...], doubled: false, outcome: "BLACKJACK" }
+  // 多步驟回合（DRAGON_GATE/HIGH_LOW/BLACKJACK）開局即寫入 status="OPEN"，
+  // 結算時更新同一筆記錄；孤兒回合規則見 docs/04_API_SPEC.md 對應章節。
+
+  roundId        String?  @map("round_id") // 輪盤回合；DRAGON_GATE/HIGH_LOW/BLACKJACK 的回合 ID 亦共用此欄位
+  serverSeedHash String   @map("server_seed_hash") // provably-fair 預留
+  createdAt      DateTime @default(now()) @map("created_at")
+  user           User     @relation(fields: [userId], references: [id])
+
+  @@index([userId, createdAt])
+  @@index([gameType, createdAt])
+  @@index([roundId])
+  // BRIN：物化視圖刷新（依 created_at 範圍掃描）用
+  @@index([createdAt], map: "bet_records_created_brin", type: Brin)
+  @@map("bet_records")
+}
+
+// ─────────────────────────── 護符 ───────────────────────────
+
+model Charm {
+  id          String      @id @default(cuid())
+  code        String      @unique // "CLOVER_BOOST_30"
+  name        String      @db.VarChar(40)
+  description String      @db.VarChar(200)
+  type        CharmType
+  rarity      CharmRarity
+  effect      Json
+  // WEIGHT:      { symbol, reels: [1,2,3], multiplier: 1.3 }
+  // CONDITIONAL: { trigger: { reel12: "LUCKY7" },
+  //                variant: { reel: 3, symbol: "LUCKY7", multiplier: 3 } }
+  // RULE:        { wildSubstitute: true }
+  // PITY:        { threshold: 10, bonus: 0.5 }
+  // BONUS:       { onSymbol: "DIAMOND", jackpotPoints: 100 }
+  // LUCK:        { symbol: "BAR", luck: 65 }
+  //              機率觸發、鎖定第3軸覆寫為 symbol（不動權重，與 p³ 連線機率解耦）；
+  //              自然結果已是任意三連時不覆寫。luck 0–100 對應觸發機率（v1 線性 1:1）。
+
+  enabled   Boolean     @default(true)
+  createdAt DateTime    @default(now()) @map("created_at")
+  owners    UserCharm[]
+
+  @@map("charms")
+}
+
+model UserCharm {
+  id         String   @id @default(cuid())
+  userId     String   @map("user_id")
+  charmId    String   @map("charm_id")
+  equipped   Boolean  @default(false)
+  slot       Int? // 1..3；equipped=true 時必填
+  obtainedAt DateTime @default(now()) @map("obtained_at")
+  user       User     @relation(fields: [userId], references: [id])
+  charm      Charm    @relation(fields: [charmId], references: [id])
+
+  @@unique([userId, charmId])
+  @@unique([userId, slot]) // 一槽一符
+  @@index([userId, equipped])
+  @@map("user_charms")
+}
+
+// ─────────────────────────── Jackpot ───────────────────────────
+
+model Jackpot {
+  // 單行表，永遠 id=1（migration 內含種子行）
+  id Int @id @default(1)
+
+  // ★ 樂觀鎖欄位對：pool 為持久真值（Redis 僅存未落庫增量）。
+  //   派彩必須：UPDATE jackpot SET pool = ..., version = version + 1
+  //             WHERE id = 1 AND version = :version → 受影響行數 0 則重試（≤3 次）
+  pool      BigInt           @default(0)
+  version   Int              @default(0) // 樂觀鎖計數器
+  updatedAt DateTime         @updatedAt @map("updated_at")
+  history   JackpotHistory[]
+
+  @@map("jackpot")
+}
+
+model JackpotHistory {
+  id         String   @id @default(cuid())
+  jackpotId  Int      @default(1) @map("jackpot_id")
+  userId     String   @map("user_id")
+  poolBefore BigInt   @map("pool_before")
+  payout     BigInt // 80%
+  remained   BigInt // 20% 留底
+  createdAt  DateTime @default(now()) @map("created_at")
+  jackpot    Jackpot  @relation(fields: [jackpotId], references: [id])
+  user       User     @relation(fields: [userId], references: [id])
+
+  @@index([createdAt])
+  @@map("jackpot_history")
+}
+
+// ─────────────────────────── Gift Code ───────────────────────────
+
+model GiftCode {
+  id          String               @id @default(cuid())
+  code        String               @unique @db.VarChar(32) // ≥16 字元 CSPRNG base32
+  amount      BigInt
+  charmId     String?              @map("charm_id") // 可附贈護符
+  maxUses     Int                  @default(1) @map("max_uses") // 初版恆 1（單次使用）
+  usedCount   Int                  @default(0) @map("used_count")
+  expiresAt   DateTime             @map("expires_at") // 必填：時效性
+  createdById String               @map("created_by_id") // Admin
+  createdAt   DateTime             @default(now()) @map("created_at")
+  redemptions GiftCodeRedemption[]
+
+  @@index([expiresAt])
+  @@map("gift_codes")
+}
+
+model GiftCodeRedemption {
+  id         String   @id @default(cuid())
+  giftCodeId String   @map("gift_code_id")
+  userId     String   @map("user_id")
+  createdAt  DateTime @default(now()) @map("created_at")
+  giftCode   GiftCode @relation(fields: [giftCodeId], references: [id])
+  user       User     @relation(fields: [userId], references: [id])
+
+  @@unique([giftCodeId, userId]) // DB 層防同人重複兌換
+  @@map("gift_code_redemptions")
+}
+
+// ─────────────────────────── 紀錄與日誌 ───────────────────────────
+
+model LoginLog {
+  id        String      @id @default(cuid())
+  userId    String?     @map("user_id") // 帳號不存在時為 null
+  username  String      @db.VarChar(20)
+  ip        String      @db.VarChar(45)
+  userAgent String      @map("user_agent") @db.VarChar(255)
+  result    LoginResult
+  createdAt DateTime    @default(now()) @map("created_at")
+  user      User?       @relation(fields: [userId], references: [id])
+
+  @@index([userId, createdAt])
+  @@index([ip, createdAt])
+  @@map("login_logs")
+}
+
+model ChatMessage {
+  id        String   @id @default(cuid())
+  userId    String?  @map("user_id") // null = 系統訊息
+  content   String   @db.VarChar(200) // 已過濾 URL、已轉義
+  system    Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User?    @relation(fields: [userId], references: [id])
+
+  @@index([createdAt]) // 7 天清理排程用
+  @@map("chat_messages")
+}
+
+model LeaderboardSnapshot {
+  id        String          @id @default(cuid())
+  kind      LeaderboardKind
+  periodKey String?         @map("period_key") @db.VarChar(10) // DAILY/WEEKLY 用日期或週編號；TOTAL 為 NULL
+  rank      Int
+  userId    String          @map("user_id")
+  score     BigInt
+  createdAt DateTime        @default(now()) @map("created_at")
+  user      User            @relation(fields: [userId], references: [id])
+
+  @@unique([kind, periodKey, rank])
+  @@index([userId])
+  @@map("leaderboard_snapshots")
+}
+
+// ─────────────────────────── 每日系統 ───────────────────────────
+
+model DailyTask {
+  id          String              @id @default(cuid())
+  code        String              @unique // "SPIN_20"
+  name        String              @db.VarChar(40)
+  type        TaskType
+  target      Int // 目標值（20 次、5 局…）
+  rewardCoin  BigInt              @default(0) @map("reward_coin")
+  rewardCharm Boolean             @default(false) @map("reward_charm") // 是否給護符抽取
+  enabled     Boolean             @default(true)
+  progress    UserDailyProgress[]
+
+  @@map("daily_tasks")
+}
+
+model UserDailyProgress {
+  id        String    @id @default(cuid())
+  userId    String    @map("user_id")
+  taskId    String    @map("task_id")
+  dateKey   String    @map("date_key") @db.VarChar(10) // "2026-06-11"（Asia/Taipei）
+  progress  Int       @default(0)
+  claimed   Boolean   @default(false)
+  claimedAt DateTime? @map("claimed_at")
+  user      User      @relation(fields: [userId], references: [id])
+  task      DailyTask @relation(fields: [taskId], references: [id])
+
+  @@unique([userId, taskId, dateKey])
+  @@index([dateKey])
+  @@map("user_daily_progress")
+}
+
+// ─────────────────────────── 管理與安全 ───────────────────────────
+
+model AdminAuditLog {
+  id           String   @id @default(cuid())
+  adminId      String   @map("admin_id")
+  action       String   @db.VarChar(40) // "ADJUST_BALANCE" / "BAN_USER" / "CREATE_GIFTCODE"
+  targetUserId String?  @map("target_user_id")
+  before       Json?
+  after        Json?
+  ip           String   @db.VarChar(45)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([adminId, createdAt])
+  @@index([targetUserId])
+  @@map("admin_audit_logs")
+}
+
+model IllegalPacketLog {
+  id        String          @id @default(cuid())
+  userId    String?         @map("user_id")
+  ip        String          @db.VarChar(45)
+  violation PacketViolation
+  endpoint  String          @db.VarChar(80)
+  rawSample String?         @map("raw_sample") @db.VarChar(1024) // payload 截斷 1KB
+  createdAt DateTime        @default(now()) @map("created_at")
+
+  @@index([userId, createdAt])
+  @@index([violation, createdAt])
+  @@map("illegal_packet_logs")
+}
+
+model Announcement {
+  id        String    @id @default(cuid())
+  title     String    @db.VarChar(60)
+  content   String    @db.VarChar(500)
+  active    Boolean   @default(true)
+  startsAt  DateTime  @default(now()) @map("starts_at")
+  endsAt    DateTime? @map("ends_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@index([active, startsAt])
+  @@map("announcements")
+}
+
+// ─────────────────────────── 成就 ───────────────────────────
+
+model Achievement {
+  id          String            @id @default(cuid())
+  code        String            @unique // "FIRST_TRIPLE"
+  name        String            @db.VarChar(40)
+  description String            @db.VarChar(120)
+  rewardCoin  BigInt            @default(0) @map("reward_coin")
+  unlocks     UserAchievement[]
+
+  @@map("achievements")
+}
+
+model UserAchievement {
+  id            String      @id @default(cuid())
+  userId        String      @map("user_id")
+  achievementId String      @map("achievement_id")
+  unlockedAt    DateTime    @default(now()) @map("unlocked_at")
+  user          User        @relation(fields: [userId], references: [id])
+  achievement   Achievement @relation(fields: [achievementId], references: [id])
+
+  @@unique([userId, achievementId])
+  @@map("user_achievements")
+}
+
+// ─────────────────────────── 農場（VCS 第二核心子系統） ───────────────────────────
+//
+// 防作弊焦點與賭場不同（時間繞過 + 併發競態；技術草案 §1/§4）：
+//   1. 時間權威：收成/偷菜的合法性只看 DB 時間戳 vs 伺服器 now()，不信任 state 欄位
+//      的展示值、更不信任客戶端時間。
+//   2. 原子性：收成與偷菜一律「條件式 updateMany + 受影響行數判斷」，
+//      禁止先查詢再更新（雙收成/雙偷同一塊地的競態靠這條殲滅）。
+//   3. 零和轉移：偷菜者拿走收成的固定比例（raidedAmount），victim 收成時領「全額 −
+//      raidedAmount」；兩邊都走 wallet service 落 BalanceTransaction，可全帳回放。
+
+// 作物定義（權威數值在 config/constants.ts FARM_SEED_TYPES，seed 腳本 upsert 進來）
+model SeedType {
+  id          String  @id @default(cuid())
+  code        String  @unique // "GOLDEN_WHEAT"
+  name        String  @db.VarChar(40)
+  description String  @db.VarChar(200)
+  cost        BigInt // 種子成本（先掏錢製造損失厭惡；草案 §3.3）
+  harvest     BigInt // 成熟收成總值（cost × 1.5–2.5；草案 §3.3）
+  growSeconds Int     @map("grow_seconds") // 生長時間（真正的平衡旋鈕）
+  imageKey    String  @map("image_key") @db.VarChar(40) // 前端素材鍵（wheat/coin/gem）
+  enabled     Boolean @default(true)
+
+  plots Plot[]
+
+  @@map("seed_types")
+}
+
+model Plot {
+  id        String    @id @default(cuid())
+  ownerId   String    @map("owner_id")
+  plotIndex Int       @map("plot_index") // 0..FARM_PLOT_COUNT-1（列於首次種植時才建立）
+  state     PlotState @default(EMPTY)
+
+  seedTypeId String?   @map("seed_type_id")
+  plantedAt  DateTime? @map("planted_at")
+  // ★ 真值來源：計時器/通知 job 全部從本欄位重建（reboot 存活性；草案 §4.2）
+  readyAt    DateTime? @map("ready_at")
+  // 看守期＝readyAt + FARM_GUARD_SECONDS：成熟瞬間的保護窗，主人可收、外人不可偷
+  guardUntil DateTime? @map("guard_until")
+
+  // 本輪掠奪標記：一輪作物最多被偷一次（raidedById 由 NULL 條件更新搶佔，
+  // 「多人同偷只有一人得手」的原子性依賴此欄位；草案 §4.3）
+  raidedById   String? @map("raided_by_id")
+  raidedAmount BigInt  @default(0) @map("raided_amount")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  owner    User      @relation("PlotOwner", fields: [ownerId], references: [id])
+  seedType SeedType? @relation(fields: [seedTypeId], references: [id])
+  raidedBy User?     @relation("PlotRaider", fields: [raidedById], references: [id])
+  raidLogs RaidLog[]
+
+  @@unique([ownerId, plotIndex])
+  // reboot 重建掃描（state=GROWING）+ 掠奪目標查詢（成熟未被偷）共用
+  @@index([state, readyAt])
+  @@map("plots")
+}
+
+// 掠奪紀錄：稽核 + 保護機制判斷（每日被偷上限 / 偷竊冷卻；草案 §3.5）
+model RaidLog {
+  id       String @id @default(cuid())
+  raiderId String @map("raider_id")
+  victimId String @map("victim_id")
+  plotId   String @map("plot_id")
+  amount   BigInt // 零和轉移金額（= harvest × FARM_STEAL_RATE_PERCENT%）
+  dateKey  String @map("date_key") @db.VarChar(10) // "2026-07-02"（Asia/Taipei；每日上限判斷）
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  raider User @relation("RaidRaider", fields: [raiderId], references: [id])
+  victim User @relation("RaidVictim", fields: [victimId], references: [id])
+  plot   Plot @relation(fields: [plotId], references: [id])
+
+  @@index([victimId, dateKey]) // 每日被偷上限
+  @@index([raiderId, victimId, createdAt]) // 同對象偷竊冷卻
+  @@map("raid_logs")
+}
