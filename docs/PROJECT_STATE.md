@@ -20,6 +20,22 @@
 （`import.meta.env.PROD` 型別宣告，專案先前缺漏）。`vue-tsc --noEmit` + `vite build`
 通過；已部署上線（frontend-only：stop nginx → build → start nginx）。
 
+## 應用層安全審查：每日系統雙領併發競態（2026-07-05）
+
+全模組逐層審查（核心安全層、七款遊戲、農場、admin/2FA、社群、jobs、sockets）發現
+每日系統兩處 read-check-write 競態——`claimDailyLogin` 與 `claimTask` 的「今日已領」
+檢查與發獎並非原子，兩個並發請求（含跨 cluster worker）可雙雙通過檢查而重複發獎：
+
+- **`claimDailyLogin`**：改為單一交易內「`lastDailyAt` 尚未跨入今日（Asia/Taipei）
+  才認領」的條件式 `updateMany` + 行數檢查，與 wallet / gift-code 既有作法一致；
+  僅寫 `loginStreak`/`lastDailyAt` 非餘額欄位，餘額鐵律仍由 `wallet.credit` 保障。
+- **`claimTask`**：改為 `updateMany where claimed=false` 條件領取 + 行數檢查，杜絕
+  重複發獎與重複授予護符。
+- 每日系統原本零測試覆蓋，新增 `daily-claim-concurrency.spec.ts` 併發回歸測試
+  （e2e-fakes 擴充 `lastDailyAt`/`loginStreak` 欄位 + OR 條件 `updateMany`）。
+- 測試：700 條全綠（698 + 新增 2 條併發回歸測試）；typecheck / lint 通過。
+  詳細審查範圍與結論見 `quicktoknow.md` 同日條目。
+
 ## 缺口修補：anomaly / NET_WIN 全遊戲接線 + 成就測試（2026-07-03）
 
 同日全模組掃描（quicktoknow.md）找出的三個程式碼層缺漏，本批一次修復：
