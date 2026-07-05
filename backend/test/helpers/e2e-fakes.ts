@@ -55,6 +55,8 @@ export interface FakeE2EUser {
   flagged: boolean;
   avatarId: number;
   jackpotPoints: number;
+  loginStreak: number;
+  lastDailyAt: Date | null;
   createdAt: Date;
 }
 
@@ -257,6 +259,8 @@ export function createE2EDb(options: FakeE2EDbOptions = {}) {
     flagged: false,
     avatarId: 0,
     jackpotPoints: 0,
+    loginStreak: 0,
+    lastDailyAt: null,
     createdAt: new Date(Date.now() + seq),
   }));
   const refreshTokens: FakeRefreshToken[] = [];
@@ -377,6 +381,8 @@ export function createE2EDb(options: FakeE2EDbOptions = {}) {
           flagged: false,
           avatarId: 0,
           jackpotPoints: 0,
+          loginStreak: 0,
+          lastDailyAt: null,
           createdAt: new Date(Date.now() + seq),
         };
         users.push(user);
@@ -399,29 +405,48 @@ export function createE2EDb(options: FakeE2EDbOptions = {}) {
         return { ...user };
       },
 
-      // ★ 條件檢查與變更同步完成 ＝ SQL 條件更新原子性（wallet 唯一寫餘額入口）
+      // ★ 條件檢查與變更同步完成 ＝ SQL 條件更新原子性（wallet 唯一寫餘額入口；
+      //   daily 登入的 lastDailyAt 「尚未跨日才認領」條件更新亦走此路徑）
       async updateMany({
         where,
         data,
       }: {
-        where: { id: string; balance?: { gte: bigint }; flagged?: boolean };
+        where: {
+          id: string;
+          balance?: { gte: bigint };
+          flagged?: boolean;
+          // daily 登入原子認領：lastDailyAt 為 null 或早於今日 00:00
+          OR?: Array<{ lastDailyAt: null } | { lastDailyAt: { lt: Date } }>;
+        };
         data: {
           balance?: { decrement?: bigint; increment?: bigint };
           version?: { increment: number };
           flagged?: boolean;
+          loginStreak?: number;
+          lastDailyAt?: Date;
         };
       }) {
+        const matchesOr = (u: FakeE2EUser): boolean => {
+          if (where.OR === undefined) return true;
+          return where.OR.some((cond) => {
+            if (cond.lastDailyAt === null) return u.lastDailyAt === null;
+            return u.lastDailyAt !== null && u.lastDailyAt < cond.lastDailyAt.lt;
+          });
+        };
         const matched = users.filter(
           (u) =>
             u.id === where.id &&
             (where.balance?.gte === undefined || u.balance >= where.balance.gte) &&
-            (where.flagged === undefined || u.flagged === where.flagged),
+            (where.flagged === undefined || u.flagged === where.flagged) &&
+            matchesOr(u),
         );
         for (const u of matched) {
           if (data.balance?.decrement !== undefined) u.balance -= data.balance.decrement;
           if (data.balance?.increment !== undefined) u.balance += data.balance.increment;
           if (data.version?.increment !== undefined) u.version += data.version.increment;
           if (data.flagged !== undefined) u.flagged = data.flagged;
+          if (data.loginStreak !== undefined) u.loginStreak = data.loginStreak;
+          if (data.lastDailyAt !== undefined) u.lastDailyAt = data.lastDailyAt;
         }
         return { count: matched.length };
       },

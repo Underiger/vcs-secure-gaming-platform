@@ -1,7 +1,7 @@
 # VCS 快速上手指南（quicktoknow）
 
 > 五分鐘看懂這個專案。想深入某個主題時，文末有「往哪裡挖」索引。
-> 最後更新：2026-07-03（M30 麻將聽牌挑戰上線後）
+> 最後更新：2026-07-05（應用層安全審查 + 每日獎勵雙領競態修補）
 
 ---
 
@@ -147,6 +147,22 @@
 - ~~成就子系統無測試覆蓋~~ → **已修復**：+20 條測試（tryUnlock 冪等/競態 + onSettle 回歸）
 - Provably Fair 的 `serverSeedHash` 已落庫，但客戶端驗證介面未開放
 - Pi 4 真機端對端驗收待正式憑證（冒煙腳本已備）
+
+## 應用層安全審查（2026-07-05；authz / 業務規則 / 併發邊界）
+
+全模組逐層審查（核心安全層、七款遊戲、農場、admin/2FA、社群、jobs、sockets）。
+結論：錢包鐵律、HMAC 簽章鏈、nonce/seq 防重放、round-lock、Jackpot 樂觀鎖、
+gift-code/gacha/農場的條件式原子更新、refresh token 旋轉與重用偵測、TOTP + AES-GCM
+均正確。**發現並修復每日系統兩處「雙領」併發競態**（唯二用 read-check-write 而非
+條件式原子更新的路徑）：
+
+- **每日登入獎勵雙領** → **已修復**：`claimDailyLogin` 改為單一交易內
+  「lastDailyAt 尚未跨入今日才認領」的條件式 `updateMany` + 行數檢查，併發同時領取
+  恰一個成功（`daily.service.ts`）。
+- **每日任務獎勵雙領** → **已修復**：`claimTask` 改為 `updateMany where claimed=false`
+  條件領取 + 行數檢查，杜絕併發重複發獎（甚至重複授予護符）。
+- **補測試覆蓋**：每日系統原本零測試覆蓋，新增 `daily-claim-concurrency.spec.ts`
+  併發回歸測試（e2e-fakes 擴充 lastDailyAt/loginStreak + 條件式 updateMany）。
 
 ---
 

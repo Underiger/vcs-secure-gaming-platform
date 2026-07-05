@@ -89,6 +89,13 @@ function getTodayDateKey(): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei' }).format(new Date());
 }
 
+/** Asia/Taipei（固定 UTC+8）當日 00:00 對應的 UTC 瞬間——供「是否已跨日」原子比對 */
+function taipeiDayStartUtc(at: Date): Date {
+  const key = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei' }).format(at);
+  const [year, month, day] = key.split('-').map(Number) as [number, number, number];
+  return new Date(Date.UTC(year, month - 1, day) - 8 * 60 * 60 * 1_000);
+}
+
 function calcLoginReward(streak: number): { rewardCoin: bigint; multiplier: number } {
   // streak >= 7 → 2.0x，streak >= 3 → 1.5x，其餘 1.0x
   const multiplier = streak >= 7 ? 2.0 : streak >= 3 ? 1.5 : 1.0;
@@ -158,24 +165,36 @@ export function createDailyService(deps: DailyServiceDeps) {
     }
 
     const { rewardCoin, multiplier } = calcLoginReward(newStreak);
+    const claimedAt = new Date();
+    const todayStart = taipeiDayStartUtc(claimedAt);
 
-    // 更新 loginStreak + lastDailyAt（非 balance 欄位，餘額鐵律不適用；
-    // 此處例外放行 prisma.user.update——僅寫登入連續天數與時間戳，永不碰 balance）
-    // eslint-disable-next-line no-restricted-syntax
-    await prisma.user.update({
-      where: { id: userId },
-      data: { loginStreak: newStreak, lastDailyAt: new Date() },
-    });
+    // ★ 原子防雙領（併發競態）：把「認領今日」與「發獎」收進單一交易——僅當
+    //   lastDailyAt 尚未進入今日（Asia/Taipei）才更新，併發同時領取恰一個成功、
+    //   其餘 count=0 → 今日已領取。上方的日期檢查僅為友善快速失敗；先前缺此原子
+    //   認領時，兩個並發請求（甚至跨 cluster worker）可雙雙通過檢查而重複發獎。
+    //   僅寫 loginStreak / lastDailyAt 非餘額欄位，餘額鐵律仍由 wallet.credit 保障。
+    const newBalance = await prisma.$transaction(async (tx) => {
+      const { count } = await tx.user.updateMany({
+        where: {
+          id: userId,
+          OR: [{ lastDailyAt: null }, { lastDailyAt: { lt: todayStart } }],
+        },
+        data: { loginStreak: newStreak, lastDailyAt: claimedAt },
+      });
+      if (count !== 1) throw new ConflictError('今日登入獎勵已領取');
 
-    const result = await wallet.credit(userId, rewardCoin, 'DAILY_REWARD', {
-      memo: `每日登入第 ${newStreak} 天（×${multiplier}）`,
+      const credit = await wallet.credit(userId, rewardCoin, 'DAILY_REWARD', {
+        tx,
+        memo: `每日登入第 ${newStreak} 天（×${multiplier}）`,
+      });
+      return credit.balance;
     });
 
     return {
       reward: rewardCoin.toString(),
       streak: newStreak,
       multiplier,
-      newBalance: result.balance.toString(),
+      newBalance: newBalance.toString(),
     };
   }
 
@@ -288,10 +307,14 @@ export function createDailyService(deps: DailyServiceDeps) {
     let newBalance!: bigint;
 
     await prisma.$transaction(async (tx) => {
-      await tx.userDailyProgress.update({
-        where: { id: progressId },
+      // ★ 原子領取（併發競態）：僅當尚未領取才標記，同一 progressId 併發請求恰一次
+      //   成功、其餘 count=0 → 已領取。上方的 claimed 檢查僅為友善快速失敗；先前
+      //   為無條件 update，兩個並發請求可雙雙通過檢查而重複發獎（甚至重複授予護符）。
+      const { count } = await tx.userDailyProgress.updateMany({
+        where: { id: progressId, claimed: false },
         data: { claimed: true, claimedAt: new Date() },
       });
+      if (count !== 1) throw new ConflictError('獎勵已領取');
 
       const res = await wallet.credit(userId, prog.task.rewardCoin, 'TASK_REWARD', {
         tx,
