@@ -2,6 +2,24 @@
 
 > 每個 Milestone 完成後更新；所有開發前必讀。模板出自 04_FOLDER_STRUCTURE.md §8。
 
+## 缺口修補：聊天室重連三缺陷（2026-07-05）
+
+玩家回報聊天室「時常斷線不能用」。根因是 `frontend/src/socket/client.ts`（M09 落地時的
+版本，見下方 M09 條目）三個重連缺陷疊加，並非後端問題：
+
+- **重連時未先 refresh 過期 token**：access token 僅 15 分鐘壽命，重連只讀現存 token
+  從不 refresh；掛機超過 15 分鐘後任何一次斷線，重握手一律 `UNAUTHORIZED`。改為重連前
+  解析 JWT `exp`，剩餘 < 30s 先呼叫 `auth.refresh()`。
+- **`reconnectionAttempts: 10` 耗盡即永久放棄**：改為 `Infinity`（指數退避上限仍為 20s，
+  不會轟炸伺服器）。
+- **生產環境 polling fallback 必斷**：cluster 多 worker 無 sticky session（見 M08 條目
+  黏著備註），websocket 失敗退回 polling 後續請求會落錯 worker → `Session ID unknown`
+  立即再斷。生產環境改為 `transports: ['websocket']`，開發環境保留 polling fallback。
+
+`docs/04_API_SPEC.md` §4.1 transports 描述已同步校訂。新增 `frontend/src/vite-env.d.ts`
+（`import.meta.env.PROD` 型別宣告，專案先前缺漏）。`vue-tsc --noEmit` + `vite build`
+通過；已部署上線（frontend-only：stop nginx → build → start nginx）。
+
 ## 缺口修補：anomaly / NET_WIN 全遊戲接線 + 成就測試（2026-07-03）
 
 同日全模組掃描（quicktoknow.md）找出的三個程式碼層缺漏，本批一次修復：
