@@ -1,0 +1,65 @@
+/**
+ * 暗色系賭場風格 CSS 變數（全域，非 scoped）。
+ * 供各 view/元件的 scoped <style> 以 var(--casino-*) 引用，維持視覺統一。
+ */
+:root {
+  color-scheme: dark;
+
+  /* 背景 */
+  --casino-bg-base: #0a0a12;
+  --casino-bg-mid: #14142a;
+  --casino-bg-deep: #16213e;
+  --casino-bg-surface: rgba(255, 255, 255, 0.04);
+  --casino-bg-surface-hover: rgba(255, 255, 255, 0.07);
+  --casino-bg-header: rgba(6, 6, 14, 0.6);
+
+  /* 金色（籌碼／鑲邊主色） */
+  --casino-gold: #ffd700;
+  --casino-gold-dim: rgba(255, 215, 0, 0.2);
+  --casino-gold-faint: rgba(255, 215, 0, 0.08);
+
+  /* 桌氈綠（輔助強調色） */
+  --casino-felt: #0f5132;
+  --casino-felt-glow: rgba(29, 168, 105, 0.28);
+
+  /* 文字 */
+  --casino-text-primary: #ffffff;
+  --casino-text-secondary: rgba(255, 255, 255, 0.7);
+  --casino-text-muted: rgba(255, 255, 255, 0.5);
+
+  /* 邊框 */
+  --casino-border-gold: rgba(255, 215, 0, 0.2);
+  --casino-border-gold-strong: rgba(255, 215, 0, 0.55);
+
+  /* 造型 */
+  --casino-radius-sm: 6px;
+  --casino-radius-md: 12px;
+  --casino-radius-lg: 18px;
+
+  /* 陰影／光暈 */
+  --casino-shadow-card: 0 4px 14px rgba(0, 0, 0, 0.35);
+  --casino-shadow-glow-gold: 0 0 22px rgba(255, 215, 0, 0.25);
+
+  /* ── VIP High-Roller Lounge（皇家金 × 墨綠）── */
+  --vip-ink: #07090c;
+  --vip-panel: #0a0d10;
+  --vip-panel-green: #0f1712;
+  --vip-card-green: #101b14;
+  --vip-gold: #caa64e;
+  --vip-gold-bright: #f6df9a;
+  --vip-gold-soft: #e3c470;
+  --vip-gold-deep: #8a6d2f;
+  --vip-gold-line: rgba(202, 166, 78, 0.35);
+  --vip-gold-line-strong: rgba(202, 166, 78, 0.55);
+  --vip-green-neon: #39ff88;
+  --vip-green-soft: #8ef0b6;
+  --vip-red: #d65454;
+  --vip-text: #e9dfc8;
+  --vip-text-warm: #cfc4a4;
+  --vip-text-sage: #9aa89e;
+  --vip-text-dim: #7d8a80;
+  --vip-text-olive: #8d977f;
+  --vip-font-display: 'Cinzel', 'Noto Serif TC', serif;
+  --vip-font-serif: 'Noto Serif TC', serif;
+  --vip-font-mono: 'JetBrains Mono', ui-monospace, monospace;
+}
