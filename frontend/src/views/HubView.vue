@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * HubView（遊戲分類選擇頁）：
- * 登入後的第一站，依分類導向賭場 / 益智小遊戲 / 大富翁。
+ * 登入後的第一站，依分類導向賭場 / 開心農場。
  * 賭博性質內容（賭場）獨立一頁，與其他分類分開呈現。
  */
 import { useRouter } from 'vue-router';
@@ -28,8 +28,6 @@ interface CategoryItem {
 const categories: CategoryItem[] = [
   { name: '賭場', icon: '🎰', route: '/casino', desc: '老虎機、輪盤、21點、射龍門、猜高低', available: true },
   { name: '開心農場', icon: '🌾', route: '/farm', desc: '種地、收成、偷別人的菜', available: true },
-  { name: '益智小遊戲', icon: '🧩', route: '/minigames', desc: '俄羅斯方塊、踩地雷、小精靈……', available: false },
-  { name: '大富翁', icon: '🏠', route: '/monopoly', desc: '經典棋盤對戰', available: false },
 ];
 </script>
 

@@ -29,18 +29,6 @@ const routes: RouteRecordRaw[] = [
     component: () => import('../views/FarmView.vue'),
     meta: { requiresAuth: true },
   },
-  {
-    path: '/minigames',
-    name: 'minigames',
-    component: () => import('../views/ComingSoonView.vue'),
-    meta: { requiresAuth: true, title: '益智小遊戲', icon: '🧩', desc: '俄羅斯方塊、踩地雷、小精靈……開發中，敬請期待！' },
-  },
-  {
-    path: '/monopoly',
-    name: 'monopoly',
-    component: () => import('../views/ComingSoonView.vue'),
-    meta: { requiresAuth: true, title: '大富翁', icon: '🏠', desc: '經典棋盤對戰，開發中，敬請期待！' },
-  },
   // 後續 Milestone 補充的路由佔位（M11/M15/M17/M19/M20）
   {
     path: '/slot',
