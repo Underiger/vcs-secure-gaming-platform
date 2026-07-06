@@ -207,7 +207,7 @@ v1.0.0 發布後的安全與驗收補強，無新里程碑：
   （`backend/src/jobs/timed-mute.job.ts` + `admin.releaseTimedMute`）。
 - **依賴 CVE 修補**（commits `156602a`/`439aacd`/`a37bd8d`/`b910f10`）：esbuild GHSA-gv7w-rqvm-qjhr、
   ws CVE-2026-48779、form-data CVE-2026-12143 已透過 root `package.json` `overrides` 修補；詳見
-  `docs/0615_SECURITY_REPORT.md`。
+  `docs/CVE Security Advisory.md`。
 - **Pi 4 部署冒煙測試**：新增 `scripts/smoke-test.js`（`npm run test:smoke`），對部署堆疊驗收
   Nginx /health → /api 反向代理 → 註冊（PG）→ 登入（Redis 金鑰）→ HMAC spin → Socket.IO WSS 關鍵路徑；
   預設打 `https://localhost`（自簽略過 TLS 驗證，正式憑證設 `SMOKE_TLS_VERIFY=1`）。

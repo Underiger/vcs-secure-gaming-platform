@@ -8,7 +8,7 @@
 
 > 📖 **五分鐘導覽 → [Quick to Know](quicktoknow.md)**
 > 🔐 **安全演練報告 → [Security Test Report](docs/security-test-report.md)**
-> 🛡️ **CVE 報告 → [0615 Security Report](docs/0615_SECURITY_REPORT.md)**
+> 🛡️ **CVE 報告 → [CVE Security Advisory](docs/CVE%20Security%20Advisory.md)**
 
 ---
 
@@ -156,7 +156,7 @@ LCG 取模之低位元偏差污染 Fisher-Yates 洗牌（RTP 虛高約 5pp）—
 
 `scripts/security-attacks/` 對執行中系統實際發動五類攻擊並驗證攔截：
 重放、序號倒退、簽章竄改、逾時下注、聊天洗頻（報告見
-`docs/security-test-report.md` 與 `docs/0615_SECURITY_REPORT.md`）。
+`docs/security-test-report.md` 與 `docs/CVE Security Advisory.md`）。
 
 ### 5.3 效能
 

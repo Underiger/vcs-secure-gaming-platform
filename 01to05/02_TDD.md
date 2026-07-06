@@ -215,7 +215,7 @@ WHERE id = :userId AND balance >= :amount;
 ### 5.10 CSP 與安全標頭（commit `5423d6c`）
 - `nginx/conf.d/security-headers.inc`：集中定義安全標頭，新增 **Content-Security-Policy**（v1.0 規劃稿原僅有 HSTS/X-Frame-Options/X-XSS-Protection，缺 CSP——X-XSS-Protection 已是現代瀏覽器棄用機制，CSP 才是實際防線）。
 - 修正既有問題：`/admin` 與 `/` 下 `*.{js,css,woff,...}` 靜態資源 location 各自宣告 `add_header Cache-Control`，依 Nginx 繼承規則會導致外層 server 區塊的 HSTS/X-Frame-Options 等標頭整組遺失；改為 `include` 共用片段補回。
-- 依賴 CVE 修補（commits `156602a`/`439aacd`/`a37bd8d`/`b910f10`）：esbuild（GHSA-gv7w-rqvm-qjhr）、ws（CVE-2026-48779）、form-data（CVE-2026-12143）透過根目錄 `package.json` 的 `overrides` 修補，詳見 `docs/0615_SECURITY_REPORT.md`。
+- 依賴 CVE 修補（commits `156602a`/`439aacd`/`a37bd8d`/`b910f10`）：esbuild（GHSA-gv7w-rqvm-qjhr）、ws（CVE-2026-48779）、form-data（CVE-2026-12143）透過根目錄 `package.json` 的 `overrides` 修補，詳見 `docs/CVE Security Advisory.md`。
 
 ---
 

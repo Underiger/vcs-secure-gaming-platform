@@ -22,7 +22,7 @@ Online-casino-on-Pi4/
 ├── nginx/                   # 反向代理設定（TLS、限流、CSP 等安全標頭、靜態檔）
 ├── scripts/                 # 部署、備份、壓測、RTP 模擬、金鑰產生、安全演練腳本
 ├── docs/                    # 04_API_SPEC.md / PROJECT_STATE.md / project_context.md /
-│                            #   0615_SECURITY_REPORT.md / security-test-report.md（持續更新文件）
+│                            #   CVE Security Advisory.md / security-test-report.md（持續更新文件）
 ├── docker-compose.yml       # 開發用（含熱重載 volume mount）
 ├── docker-compose.arm64.yml # 生產用（Pi 4，mem_limit、healthcheck、restart policy）
 ├── migrate-to-ssd.sh        # ★將專案 + docker data-root 移至 USB SSD 的一次性搬移腳本
@@ -254,7 +254,7 @@ docs/
 ├── 04_API_SPEC.md               # ★M05 產出，持續校訂：REST 路由 + Socket 事件全表 + 錯誤碼總表
 ├── PROJECT_STATE.md             # ★每個 Milestone 完成後更新；所有開發前必讀（見 §8 範例）
 ├── project_context.md           # ★快速入門文件：給新加入開發者/AI 助手的專案現況速覽
-├── 0615_SECURITY_REPORT.md      # ★CVE 修補與依賴安全調查紀錄（esbuild/ws/form-data）
+├── CVE Security Advisory.md      # ★CVE 修補與依賴安全調查紀錄（esbuild/ws/form-data）
 └── security-test-report.md      # ★M27 安全演練報告（5 類攻擊向量 + 落庫佐證 + 落差記錄）
 ```
 
