@@ -26,7 +26,6 @@ Online-casino-on-Pi4/
 ├── docker-compose.yml       # 開發用（含熱重載 volume mount）
 ├── docker-compose.arm64.yml # 生產用（Pi 4，mem_limit、healthcheck、restart policy）
 ├── migrate-to-ssd.sh        # ★將專案 + docker data-root 移至 USB SSD 的一次性搬移腳本
-├── online casino.txt        # ★使用者原始需求簡述（專案發起文件，非規格書）
 ├── .env.example             # 全部環境變數範本（敏感值留空）
 ├── .env.production          # 生產機密值（已 gitignore，僅存在於部署主機本機）
 ├── .gitignore               # .env* / node_modules / dist / *.pem / pgdata

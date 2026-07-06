@@ -234,7 +234,7 @@ v1.0.0 發布後的安全與驗收補強，無新里程碑：
 - 新增 `GIFT_CODE_ALREADY_REDEEMED`（409）錯誤碼（區分「碼用完」與「同人重複兌換」）
 - 聊天限流錯誤碼由模糊的 `CHAT_RATE_LIMIT` 更正為實作使用的 `RATE_LIMIT_BURST`（短爆發）／`RATE_LIMIT_MINUTE`（分鐘桶），並標示為 Socket ack 錯誤碼
 
-**需求對照表**（對比 `online casino.txt`）：
+**需求對照表**：
 
 | 需求 | 實作里程碑 | 狀態 |
 |------|-----------|------|
