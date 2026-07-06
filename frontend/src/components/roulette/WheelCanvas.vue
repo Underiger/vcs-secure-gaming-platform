@@ -1,6 +1,9 @@
 <template>
   <div ref="containerRef" class="wheel-container">
-    <canvas ref="canvasRef" class="wheel-canvas" />
+    <div class="wheel-pointer" aria-hidden="true" />
+    <div ref="rotorRef" class="wheel-rotor">
+      <canvas ref="canvasRef" class="wheel-canvas" />
+    </div>
     <!-- overlay badge for winning number pop -->
     <Transition name="num-pop">
       <div v-if="displayNum !== null" class="num-badge" :class="displayColor">
@@ -36,6 +39,12 @@ function numColorClass(n: number): string {
 // ─── Canvas drawing ────────────────────────────────────────────────────────
 
 const SEGMENTS = WHEEL_ORDER.length; // 37
+const STEP_DEG = 360 / SEGMENTS;
+
+/** number → its slot index in WHEEL_ORDER, for computing landing rotation */
+const NUMBER_INDEX = new Map<number, number>(
+  WHEEL_ORDER.map((n, i): [number, number] => [n, i]),
+);
 
 function drawWheel(
   ctx: CanvasRenderingContext2D,
@@ -133,12 +142,11 @@ function drawWheel(
 
 const containerRef = ref<HTMLDivElement | null>(null);
 const canvasRef = ref<HTMLCanvasElement | null>(null);
+const rotorRef = ref<HTMLDivElement | null>(null);
 
 let ctx: CanvasRenderingContext2D | null = null;
 let canvasSize = 0;
-let animFrameId: number | null = null;
 let highlightedNum: number | null = null;
-let highlightStartTime = 0;
 const HIGHLIGHT_MS = 2500;
 
 const displayNum = ref<number | null>(null);
@@ -173,26 +181,110 @@ function updateSize(): void {
   redrawStatic();
 }
 
-/** Called by RouletteView after RESULT arrives */
-function highlightNumber(n: number): void {
-  if (animFrameId !== null) {
-    cancelAnimationFrame(animFrameId);
-    animFrameId = null;
-  }
+// ─── Wheel rotation (spin) ─────────────────────────────────────────────────
 
+let currentRotation = 0; // cumulative degrees, ever-increasing
+let currentVelocity = 0; // deg/sec
+let rotationRafId: number | null = null;
+let glowRafId: number | null = null;
+
+function applyRotation(deg: number): void {
+  currentRotation = deg;
+  if (rotorRef.value !== null) rotorRef.value.style.transform = `rotate(${deg}deg)`;
+}
+
+function cancelSpin(): void {
+  if (rotationRafId !== null) {
+    cancelAnimationFrame(rotationRafId);
+    rotationRafId = null;
+  }
+}
+
+function cancelGlow(): void {
+  if (glowRafId !== null) {
+    cancelAnimationFrame(glowRafId);
+    glowRafId = null;
+  }
+}
+
+const SPIN_RAMP_MS = 500;
+const SPIN_VELOCITY_DEG_S = 720; // 2 rotations/sec cruise speed
+
+/** Called by RouletteView when LOCK phase starts (winning number not known yet). */
+function startSpin(): void {
+  cancelSpin();
+  cancelGlow();
+  highlightedNum = null;
+  displayNum.value = null;
+  redrawStatic();
+
+  const rampStart = performance.now();
+  let lastTs = rampStart;
+
+  function tick(now: number): void {
+    const dt = (now - lastTs) / 1000;
+    lastTs = now;
+    const rampT = Math.min(1, (now - rampStart) / SPIN_RAMP_MS);
+    currentVelocity = SPIN_VELOCITY_DEG_S * rampT;
+    applyRotation(currentRotation + currentVelocity * dt);
+    rotationRafId = requestAnimationFrame(tick);
+  }
+  rotationRafId = requestAnimationFrame(tick);
+}
+
+function easeOutCubic(t: number): number {
+  const p = t - 1;
+  return p * p * p + 1;
+}
+
+const LAND_MS = 3400;
+const EXTRA_SPINS = 3;
+
+/** Called by RouletteView after RESULT arrives — decelerates the wheel and lands it on the winning number. */
+function highlightNumber(n: number): void {
+  cancelSpin();
+  cancelGlow();
+
+  const idx = NUMBER_INDEX.get(n) ?? 0;
+  // Rotation (mod 360) that brings this number's sector under the fixed top pointer.
+  const desiredMod = (((-(idx + 0.5) * STEP_DEG) % 360) + 360) % 360;
+  const currentMod = ((currentRotation % 360) + 360) % 360;
+  let delta = desiredMod - currentMod;
+  if (delta < 0) delta += 360;
+
+  const startRotation = currentRotation;
+  const targetRotation = startRotation + delta + EXTRA_SPINS * 360;
+  const start = performance.now();
+
+  function tick(now: number): void {
+    const t = Math.min(1, (now - start) / LAND_MS);
+    applyRotation(startRotation + (targetRotation - startRotation) * easeOutCubic(t));
+
+    if (t >= 1) {
+      rotationRafId = null;
+      startGlowPulse(n);
+      return;
+    }
+    rotationRafId = requestAnimationFrame(tick);
+  }
+  rotationRafId = requestAnimationFrame(tick);
+}
+
+function startGlowPulse(n: number): void {
   highlightedNum = n;
-  highlightStartTime = performance.now();
   displayNum.value = n;
   displayColor.value = numColorClass(n);
 
+  const glowStart = performance.now();
+
   function animate(now: number): void {
-    const elapsed = now - highlightStartTime;
+    const elapsed = now - glowStart;
     if (elapsed >= HIGHLIGHT_MS) {
       highlightedNum = null;
       displayNum.value = null;
       const c = getCtx();
       if (c !== null) drawWheel(c, canvasSize, null, 0);
-      animFrameId = null;
+      glowRafId = null;
       return;
     }
 
@@ -203,13 +295,13 @@ function highlightNumber(n: number): void {
     const c = getCtx();
     if (c !== null) drawWheel(c, canvasSize, n, alpha);
 
-    animFrameId = requestAnimationFrame(animate);
+    glowRafId = requestAnimationFrame(animate);
   }
 
-  animFrameId = requestAnimationFrame(animate);
+  glowRafId = requestAnimationFrame(animate);
 }
 
-defineExpose({ highlightNumber });
+defineExpose({ highlightNumber, startSpin });
 
 let ro: ResizeObserver | null = null;
 
@@ -219,13 +311,14 @@ onMounted(() => {
 
   ro = new ResizeObserver(() => {
     updateSize();
-    if (animFrameId === null) redrawStatic();
+    if (rotationRafId === null && glowRafId === null) redrawStatic();
   });
   if (containerRef.value !== null) ro.observe(containerRef.value);
 });
 
 onUnmounted(() => {
-  if (animFrameId !== null) cancelAnimationFrame(animFrameId);
+  cancelSpin();
+  cancelGlow();
   ro?.disconnect();
 });
 </script>
@@ -239,11 +332,34 @@ onUnmounted(() => {
   margin: 0 auto;
 }
 
+/* Rotating layer — canvas is drawn once in local coords; this wrapper spins it */
+.wheel-rotor {
+  position: absolute;
+  inset: 0;
+  will-change: transform;
+}
+
 .wheel-canvas {
   display: block;
   width: 100%;
   height: 100%;
   border-radius: 50%;
+}
+
+/* Fixed pointer marking the winning slot at the top of the wheel */
+.wheel-pointer {
+  position: absolute;
+  top: -4px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 9px solid transparent;
+  border-right: 9px solid transparent;
+  border-top: 15px solid #fbbf24;
+  filter: drop-shadow(0 0 4px rgba(251, 191, 36, 0.85));
+  z-index: 5;
+  pointer-events: none;
 }
 
 /* Winning number badge */

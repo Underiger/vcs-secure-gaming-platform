@@ -199,6 +199,15 @@ const resultColorLabel = computed((): string => {
   return '';
 });
 
+// ─── Wheel spin-up when betting locks ─────────────────────────────────────
+
+watch(
+  () => rouletteStore.currentPhase,
+  (phase) => {
+    if (phase === 'LOCK') wheelRef.value?.startSpin();
+  },
+);
+
 // ─── Wheel highlight on new result ────────────────────────────────────────
 
 watch(
