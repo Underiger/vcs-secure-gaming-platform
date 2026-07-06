@@ -6,6 +6,10 @@
 > 對應開發里程碑 M30 及同期缺口修補（2026-07-03）之完整原始碼快照。
 > 平台僅使用虛擬遊戲幣，不涉及任何真實金錢交易（見〈倫理聲明〉）。
 
+> 📖 **五分鐘導覽 → [Quick to Know](quicktoknow.md)**
+> 🔐 **安全演練報告 → [Security Test Report](docs/security-test-report.md)**
+> 🛡️ **CVE 報告 → [0615 Security Report](docs/0615_SECURITY_REPORT.md)**
+
 ---
 
 ## Abstract
